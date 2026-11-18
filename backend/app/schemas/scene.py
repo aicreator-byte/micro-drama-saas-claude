@@ -13,7 +13,7 @@ class SceneCharacterCreate(BaseModel):
 
 
 class SceneCreate(BaseModel):
-    episode_id: uuid.UUID
+    episode_id: Optional[uuid.UUID] = None  # Optional - comes from URL path
     location_id: Optional[uuid.UUID] = None
     scene_number: int = Field(..., ge=1)
     title: Optional[str] = Field(None, max_length=255)

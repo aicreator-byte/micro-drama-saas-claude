@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
+from app.core.security import encrypt_data, decrypt_data
 
 
 class GoogleAccount(Base):
@@ -18,9 +19,12 @@ class GoogleAccount(Base):
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     token_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scopes: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
+    # Encrypted password for Flow Bridge automation
+    password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     account_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # 0-19 for max 20
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
@@ -38,6 +42,15 @@ class GoogleAccount(Base):
         Index("ix_google_accounts_user_index", "user_id", "account_index", unique=True),
         Index("ix_google_accounts_user_active", "user_id", "is_active"),
     )
+
+    # Helper methods for encrypted password
+    def set_password(self, value: str) -> None:
+        self.password_encrypted = encrypt_data(value)
+
+    def get_password(self) -> str | None:
+        if self.password_encrypted:
+            return decrypt_data(self.password_encrypted)
+        return None
 
     def __repr__(self) -> str:
         return f"<GoogleAccount(id={self.id}, email={self.email}, user_id={self.user_id})>"

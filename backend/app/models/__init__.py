@@ -13,6 +13,10 @@ from app.models.asset import Asset
 from app.models.google_account import GoogleAccount
 from app.models.flow_bridge import FlowBridge
 from app.models.story_engine import StoryEngine
+from app.models.settings import AppSettings
+from app.models.shot import Shot
+from app.models.scene_engine import SceneEngine
+from app.models.oauth_state import OAuthState
 
 __all__ = [
     "Base",
@@ -30,4 +34,8 @@ __all__ = [
     "GoogleAccount",
     "FlowBridge",
     "StoryEngine",
+    "AppSettings",
+    "Shot",
+    "SceneEngine",
+    "OAuthState",
 ]

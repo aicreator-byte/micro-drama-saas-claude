@@ -256,7 +256,7 @@ export default function PromptsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <CardTitle>Prompts ({filteredPrompts.length})</CardTitle>
-                  <CardDescription>Edit prompts, copy to clipboard, or download. Use AI generation for templates.</CardDescription>
+                  <CardDescription>Edit prompts, copy to clipboard, or download. “Generate” fills a text template (status: template) — it does not call an AI model.</CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
                   <Button variant="outline" onClick={openCreateModal}>
@@ -265,7 +265,7 @@ export default function PromptsPage() {
                   </Button>
                   <Button onClick={openCreateModal} className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">
                     <Sparkles className="w-4 h-4" />
-                    AI Generate
+                    Generate (Template)
                   </Button>
                 </div>
               </div>
@@ -283,7 +283,7 @@ export default function PromptsPage() {
                     <Type className="w-8 h-8 text-dark-400" />
                   </div>
                   <h3 className="text-lg font-medium text-dark-900 dark:text-white mb-2">No prompts yet</h3>
-                  <p className="text-dark-500 dark:text-dark-400 mb-6">Create prompts manually or use AI generation</p>
+                  <p className="text-dark-500 dark:text-dark-400 mb-6">Create prompts manually or generate from a template</p>
                   <div className="flex flex-wrap gap-2 justify-center">
                     <Button variant="outline" onClick={openCreateModal}>
                       <Plus className="w-4 h-4" />
@@ -291,7 +291,7 @@ export default function PromptsPage() {
                     </Button>
                     <Button onClick={openCreateModal} className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">
                       <Sparkles className="w-4 h-4" />
-                      AI Generate
+                      Generate (Template)
                     </Button>
                   </div>
                 </div>
@@ -464,7 +464,7 @@ export default function PromptsPage() {
                   ) : (
                     <Button type="submit" loading={generating} className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700">
                       <Sparkles className="w-4 h-4" />
-                      {generating ? "Generating..." : "Generate with AI"}
+                      {generating ? "Generating..." : "Generate Template"}
                     </Button>
                   )}
                 </div>

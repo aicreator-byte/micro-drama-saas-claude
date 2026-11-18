@@ -13,11 +13,14 @@ class GoogleAccountCreate(BaseModel):
     refresh_token: Optional[str] = None
     token_expiry: Optional[datetime] = None
     scopes: Optional[str] = None  # JSON array
+    # Password for Flow Bridge (will be encrypted)
+    password: Optional[str] = None
 
 
 class GoogleAccountUpdate(BaseModel):
     display_name: Optional[str] = Field(None, max_length=255)
     is_active: Optional[bool] = None
+    password: Optional[str] = None
 
 
 class GoogleAccountRead(BaseModel):
@@ -28,8 +31,12 @@ class GoogleAccountRead(BaseModel):
     is_active: bool
     account_index: int
     last_used_at: Optional[datetime]
+    last_verified_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
+    # Computed fields
+    has_password: bool = False
+    configured: bool = False
 
     class Config:
         from_attributes = True

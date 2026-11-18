@@ -56,6 +56,18 @@ async def create_scene(
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Scene number already exists")
 
+    # Validate location_id belongs to same project if provided
+    if scene_data.location_id:
+        from app.models.location import Location
+        loc_result = await db.execute(
+            select(Location).where(
+                Location.id == scene_data.location_id,
+                Location.project_id == episode.project_id,
+            )
+        )
+        if not loc_result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Location not found in this project")
+
     # Extract characters
     characters_data = scene_data.characters or []
     scene_dict = scene_data.model_dump(exclude={"characters", "episode_id"})
@@ -143,7 +155,7 @@ async def update_scene(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a scene"""
-    await _verify_episode_access(episode_id, user_id, db)
+    episode = await _verify_episode_access(episode_id, user_id, db)
     episode_uuid = uuid.UUID(episode_id)
     scene_uuid = uuid.UUID(scene_id)
 
@@ -169,7 +181,19 @@ async def update_scene(
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Scene number already exists")
 
+    # Validate location_id if changed (same rule as on create)
     update_data = scene_data.model_dump(exclude_unset=True)
+    if "location_id" in update_data and scene_data.location_id:
+        from app.models.location import Location
+        loc_result = await db.execute(
+            select(Location).where(
+                Location.id == scene_data.location_id,
+                Location.project_id == episode.project_id,
+            )
+        )
+        if not loc_result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Location not found in this project")
+
     for field, value in update_data.items():
         setattr(scene, field, value)
 
@@ -255,25 +279,29 @@ async def add_character_to_scene(
     db: AsyncSession = Depends(get_db),
 ):
     """Add a character to a scene"""
-    await _verify_episode_access(episode_id, user_id, db)
+    episode = await _verify_episode_access(episode_id, user_id, db)
     episode_uuid = uuid.UUID(episode_id)
     scene_uuid = uuid.UUID(scene_id)
 
     result = await db.execute(
-        select(Scene).where(
+        select(Scene)
+        .where(
             Scene.id == scene_uuid,
             Scene.episode_id == episode_uuid,
         )
+        .options(selectinload(Scene.episode))
     )
     scene = result.scalar_one_or_none()
     if not scene:
         raise HTTPException(status_code=404, detail="Scene not found")
 
-    # Verify character belongs to same project
+    # Verify character belongs to same project (use the already-loaded
+    # episode — never touch scene.episode lazily in async context,
+    # that raised MissingGreenlet here before this fix).
     char_result = await db.execute(
         select(Character).where(
             Character.id == character_data.character_id,
-            Character.project_id == scene.episode.project_id,
+            Character.project_id == episode.project_id,
         )
     )
     if not char_result.scalar_one_or_none():
@@ -295,8 +323,14 @@ async def add_character_to_scene(
     )
     db.add(scene_char)
     await db.commit()
-    await db.refresh(scene)
-    return scene
+    # Re-query with eager-loaded characters (same pattern as the other
+    # scene handlers) so response serialization never lazy-loads.
+    result = await db.execute(
+        select(Scene)
+        .where(Scene.id == scene_uuid)
+        .options(selectinload(Scene.characters).selectinload(SceneCharacter.character))
+    )
+    return result.scalar_one()
 
 
 @router.delete("/{episode_id}/{scene_id}/characters/{character_id}", response_model=SceneRead)

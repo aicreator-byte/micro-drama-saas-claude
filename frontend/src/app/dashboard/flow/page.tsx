@@ -179,6 +179,11 @@ export default function FlowBridgePage() {
   const handleGetDeeplink = async (taskId: string) => {
     try {
       const result = await getFlowDeeplink(selectedProjectId, taskId)
+      // The deeplink format is an unverified placeholder (audit F-M4) —
+      // warn instead of silently opening a possibly-wrong URL.
+      if (result.verified === false) {
+        alert("Note: this Flow deeplink format is a placeholder and has not been verified against Google Flow. It will open in a new tab — check the URL before using it.")
+      }
       window.open(result.deeplink, "_blank")
     } catch (error) {
       console.error("Failed to get deeplink:", error)
@@ -404,7 +409,7 @@ export default function FlowBridgePage() {
             <Card className="w-full max-w-2xl max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle>Export for Google Flow</CardTitle>
+                  <CardTitle>Manual Export for Google Flow</CardTitle>
                   <Button variant="ghost" size="sm" onClick={() => setExportData(null)}>
                     <X className="w-4 h-4" />
                   </Button>

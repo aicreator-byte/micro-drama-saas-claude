@@ -31,6 +31,11 @@ export default function GoogleAccountsPage() {
   })
   const [oauthInitiated, setOauthInitiated] = useState(false)
   const [oauthUrl, setOauthUrl] = useState("")
+  // State returned by POST /google-accounts/oauth/start — this exact value
+  // must be sent back to /oauth/callback (previously the page sent
+  // user?.id as state, so the callback always 400'd).
+  const [oauthState, setOauthState] = useState("")
+  const [oauthCode, setOauthCode] = useState("")
 
   useEffect(() => {
     fetchGoogleAccounts()
@@ -89,26 +94,35 @@ export default function GoogleAccountsPage() {
     try {
       const result = await startOAuth()
       setOauthUrl(result.authorization_url)
+      setOauthState(result.state || "")
       setOauthInitiated(true)
       // Open in new tab
       window.open(result.authorization_url, "_blank", "width=600,height=700")
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to start OAuth:", error)
-      alert("Failed to start OAuth flow")
+      alert(error.response?.data?.detail || "Failed to start OAuth flow")
     }
   }
 
   const handleOAuthCallback = async () => {
-    const code = prompt("Enter the authorization code from Google:")
-    if (!code) return
+    if (!oauthCode.trim()) {
+      alert("Enter the authorization code from Google first.")
+      return
+    }
+    if (!oauthState) {
+      alert("Missing OAuth state — start the OAuth flow again (the state from /oauth/start is required).")
+      return
+    }
 
     try {
-      await oauthCallback({ code, state: user?.id })
+      await oauthCallback({ code: oauthCode.trim(), state: oauthState })
       setOauthInitiated(false)
       setOauthUrl("")
-    } catch (error) {
+      setOauthState("")
+      setOauthCode("")
+    } catch (error: any) {
       console.error("OAuth callback failed:", error)
-      alert("OAuth callback failed")
+      alert(error.response?.data?.detail || "OAuth callback failed")
     }
   }
 
@@ -184,18 +198,32 @@ export default function GoogleAccountsPage() {
               <div className="space-y-3">
                 <div className="p-4 bg-primary-50 dark:bg-primary-900/20 rounded-lg border border-primary-200 dark:border-primary-800">
                   <p className="text-sm text-primary-800 dark:text-primary-200 mb-2">
-                    OAuth initiated. Complete the flow in the opened window.
+                    OAuth initiated. Complete the flow in the opened window, then paste the
+                    authorization code Google shows below.
                   </p>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="space-y-3 mt-3">
+                    <Input
+                      label="Authorization code from Google"
+                      value={oauthCode}
+                      onChange={(e) => setOauthCode(e.target.value)}
+                      placeholder="4/0AeaYSH..."
+                    />
+                    <Input
+                      label="OAuth state (from /oauth/start — do not change)"
+                      value={oauthState}
+                      disabled
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-3">
                     <Button variant="outline" size="sm" onClick={() => window.open(oauthUrl, "_blank")}>
                       <ExternalLink className="w-3 h-3" />
                       Reopen OAuth Window
                     </Button>
                     <Button onClick={handleOAuthCallback}>
                       <RefreshCw className="w-3 h-3" />
-                      I've Authorized - Complete Setup
+                      I&apos;ve Authorized - Complete Setup
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setOauthInitiated(false)}>
+                    <Button variant="ghost" size="sm" onClick={() => { setOauthInitiated(false); setOauthState(""); setOauthCode("") }}>
                       <X className="w-3 h-3" />
                       Cancel
                     </Button>

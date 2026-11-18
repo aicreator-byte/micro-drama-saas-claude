@@ -9,9 +9,58 @@ from app.api.projects import _verify_project_access
 from app.models.flow_bridge import FlowBridge, FlowTaskType, FlowTaskStatus
 from app.models.google_account import GoogleAccount
 from app.schemas.flow_bridge import FlowBridgeCreate, FlowBridgeUpdate, FlowBridgeRead, FlowBridgeList, FlowExport, FlowImport
+from app.services.flow_account_fallback import (
+    AllGoogleAccountsFailed,
+    GoogleUnreachable,
+    run_fallback_for_task,
+)
+from app.services.flow_browser_execution import (
+    AllBrowserAccountsFailed,
+    BrowserUnreachable,
+    run_browser_execution,
+)
 import uuid
 
 router = APIRouter(prefix="/flow", tags=["flow-bridge"])
+
+# Task statuses from which an account (re)resolution may run. Completed /
+# imported / in-progress tasks must not be re-bound to another account.
+_EXECUTABLE_STATUSES = {
+    FlowTaskStatus.PENDING,
+    FlowTaskStatus.READY_FOR_FLOW,
+    FlowTaskStatus.FAILED,
+}
+
+
+async def _get_flow_task_or_404(db: AsyncSession, project_id: str, task_id: str) -> FlowBridge:
+    result = await db.execute(
+        select(FlowBridge).where(
+            FlowBridge.id == uuid.UUID(task_id),
+            FlowBridge.project_id == uuid.UUID(project_id),
+        )
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Flow task not found")
+    return task
+
+
+async def _run_account_fallback(
+    db: AsyncSession, user_id: str, task: FlowBridge
+) -> FlowBridge:
+    """Resolve a working Google account for the task (with fallback).
+
+    On success returns the task (status READY_FOR_FLOW, bound to the working
+    account). When every account fails the task is already persisted as
+    FAILED with a per-account error_message — the 502 only makes the
+    failure loud at the HTTP layer instead of a silent 200.
+    """
+    try:
+        return await run_fallback_for_task(db, uuid.UUID(user_id), task)
+    except AllGoogleAccountsFailed as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except GoogleUnreachable as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.post("", response_model=FlowBridgeRead, status_code=status.HTTP_201_CREATED)
@@ -151,6 +200,99 @@ async def update_flow_task(
     return task
 
 
+@router.post("/{project_id}/{task_id}/execute", response_model=FlowBridgeRead)
+async def execute_flow_task(
+    project_id: str,
+    task_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve a usable Google account for the task and mark it ready for Flow.
+
+    Tries the task's pinned account first, then the user's other enabled
+    accounts (by account_index). An account is skipped when its quota is
+    exhausted (429), its token is invalid, or its refresh fails; the first
+    account whose token verifies against Google wins and is bound to the
+    task. When every account fails the task is persisted as FAILED with a
+    per-account error_message and this endpoint answers 502.
+    """
+    await _verify_project_access(project_id, user_id, db)
+    task = await _get_flow_task_or_404(db, project_id, task_id)
+    if task.status not in _EXECUTABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot execute a task with status '{task.status.value}'",
+        )
+    return await _run_account_fallback(db, user_id, task)
+
+
+@router.post("/{project_id}/{task_id}/retry", response_model=FlowBridgeRead)
+async def retry_flow_task(
+    project_id: str,
+    task_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual retry: re-run Google-account fallback for a failed task.
+
+    Same resolution as /execute (pinned account first, then other enabled
+    accounts); clears the previous error so a fresh attempt is recorded.
+    Only allowed from FAILED or PENDING — a completed/imported task is
+    never re-bound to another account.
+    """
+    await _verify_project_access(project_id, user_id, db)
+    task = await _get_flow_task_or_404(db, project_id, task_id)
+    if task.status not in {FlowTaskStatus.FAILED, FlowTaskStatus.PENDING}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot retry a task with status '{task.status.value}'",
+        )
+    task.error_message = None
+    await db.commit()
+    return await _run_account_fallback(db, user_id, task)
+
+
+@router.post("/{project_id}/{task_id}/execute-browser", response_model=FlowBridgeRead)
+async def execute_browser_flow_task(
+    project_id: str,
+    task_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+    headless: bool = True,
+):
+    """Run the task in Google Flow via a real browser session (no Console).
+
+    Signs in with the account's own browser profile (email + password
+    from the encrypted DB) and submits the task's prompt to Flow. If one
+    account's login / quota / session fails, the next enabled account of
+    the same user is tried automatically; every attempt is recorded in
+    fallback_history (mode "browser"). On success the task is
+    IN_PROGRESS with the Flow URL — the result is imported later via
+    /import, same as the manual path. When every account fails the task
+    is persisted as FAILED and this endpoint answers 502; manual export
+    (/flow/export) still works.
+
+    This path never touches Google Cloud Console credentials: no
+    client_id/secret, no OAuth exchange. OAuth login/callback is
+    untouched and still available for token-based accounts.
+    """
+    await _verify_project_access(project_id, user_id, db)
+    task = await _get_flow_task_or_404(db, project_id, task_id)
+    if task.status not in _EXECUTABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot execute a task with status '{task.status.value}'",
+        )
+    try:
+        return await run_browser_execution(
+            db, uuid.UUID(user_id), task, headless=headless
+        )
+    except AllBrowserAccountsFailed as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except BrowserUnreachable as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.delete("/{project_id}/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_flow_task(
     project_id: str,
@@ -194,7 +336,8 @@ async def export_for_flow(
         "prompts": export_data.prompts,
         "reference_assets": export_data.reference_assets,
         "metadata": export_data.metadata,
-        "instructions": "Import this data into Google Flow manually. After generation, use the import endpoint.",
+        "mode": "manual",
+        "instructions": "Manual export: import this data into Google Flow manually. After generation, use the import endpoint.",
     }
 
 
@@ -205,7 +348,9 @@ async def import_from_flow(
     db: AsyncSession = Depends(get_db),
 ):
     """Import results from manual Flow processing"""
-    task_uuid = uuid.UUID(import_data.flow_task_id)
+    # FlowImport.flow_task_id is already a uuid.UUID (Pydantic parses it);
+    # calling uuid.UUID() on it again raised AttributeError (audit F-H8).
+    task_uuid = import_data.flow_task_id
     result = await db.execute(select(FlowBridge).where(FlowBridge.id == task_uuid))
     task = result.scalar_one_or_none()
     if not task:
@@ -244,11 +389,17 @@ async def get_flow_deeplink(
     if not task:
         raise HTTPException(status_code=404, detail="Flow task not found")
 
-    # Google Flow deep link format (placeholder)
-    # Actual format depends on Flow's URL scheme
+    # Google Flow deep link format (UNVERIFIED placeholder — the real Flow
+    # URL scheme has not been confirmed against flow.google.com, audit
+    # F-M4. Do not present this as a verified working link in the UI.)
     deeplink = f"https://flow.google.com/task/{task.id}?project={project_id}"
 
     task.flow_url = deeplink
     await db.commit()
 
-    return {"deeplink": deeplink, "task_id": str(task.id)}
+    return {
+        "deeplink": deeplink,
+        "task_id": str(task.id),
+        "verified": False,
+        "note": "Deeplink format is a placeholder and has not been verified against Google Flow.",
+    }

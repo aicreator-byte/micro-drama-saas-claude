@@ -47,8 +47,16 @@ export const authApi = {
   login: (data: { email: string; password: string }) =>
     api.post("/auth/login", data),
   refresh: (refresh_token: string) =>
-    api.post("/auth/refresh", refresh_token),
+    // Backend expects a JSON object {refresh_token}; sending the raw
+    // string used to 422 (audit ronde 2, P0-18).
+    api.post("/auth/refresh", { refresh_token }),
   me: () => api.get("/auth/me"),
+}
+
+// Settings endpoints (AI providers + Google OAuth credentials)
+export const settingsApi = {
+  get: () => api.get("/settings"),
+  update: (data: any) => api.patch("/settings", data),
 }
 
 // Project endpoints
@@ -181,7 +189,6 @@ export const googleAccountApi = {
   startOAuth: (data?: { redirect_url?: string }) => api.post("/google-accounts/oauth/start", data),
   oauthCallback: (data: { code: string; state?: string }) =>
     api.post("/google-accounts/oauth/callback", data),
-  getTokens: (id: string) => api.get(`/google-accounts/${id}/tokens`),
 }
 
 // Flow Bridge endpoints

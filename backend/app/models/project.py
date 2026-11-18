@@ -63,6 +63,9 @@ class Project(Base):
     story_generations: Mapped[list["StoryEngine"]] = relationship(
         "StoryEngine", back_populates="project", cascade="all, delete-orphan"
     )
+    scene_generations: Mapped[list["SceneEngine"]] = relationship(
+        "SceneEngine", back_populates="project", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_projects_owner_status", "owner_id", "status"),

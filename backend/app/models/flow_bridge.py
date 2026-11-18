@@ -41,6 +41,10 @@ class FlowBridge(Base):
     output_assets: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array of generated asset IDs
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON array of Google-account fallback attempts for this task, each
+    # {"account_id", "email", "outcome": "ok"|"failed", "reason", "detail"}.
+    # Records which account was actually used and why the others were skipped.
+    fallback_history: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

@@ -8,6 +8,8 @@ from app.api.auth import get_current_user_id
 from app.api.projects import _verify_project_access
 from app.models.prompt import Prompt, PromptType
 from app.models.project import Project
+from app.models.character import Character
+from app.models.location import Location
 from app.schemas.prompt import PromptCreate, PromptUpdate, PromptRead, PromptGenerate, PromptList
 import uuid
 
@@ -151,11 +153,35 @@ async def generate_prompt(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a prompt using AI (placeholder - integrates with LLM)"""
+    """Generate a prompt from a template.
+
+    NOTE (audit ronde 2, F-M3/P1-16): this endpoint does NOT call an LLM —
+    it fills a text template. The saved row is therefore labelled
+    status="template" (not "completed") so the UI never presents a
+    template as AI-generated output. Wiring it to ai_client.generate()
+    is a follow-up once a valid provider key is configured; calling the
+    LLM here with the test/fake key would hang the request on a network
+    timeout instead of answering.
+    """
     await _verify_project_access(str(generate_data.project_id), user_id, db)
 
-    # This is a placeholder for AI generation
-    # In production, integrate with LLM provider
+    # Resolve {name} for the templates that use it. Previously the
+    # templates used {name} but format() was only given `description`,
+    # so CHARACTER_IMAGE / LOCATION_IMAGE always raised KeyError: 'name'.
+    context = generate_data.context or "A dramatic scene"
+    name = context
+    if generate_data.prompt_type == PromptType.CHARACTER_IMAGE and generate_data.character_id:
+        char = await db.scalar(
+            select(Character).where(Character.id == generate_data.character_id)
+        )
+        if char:
+            name = char.name
+    elif generate_data.prompt_type == PromptType.LOCATION_IMAGE and generate_data.location_id:
+        loc = await db.scalar(
+            select(Location).where(Location.id == generate_data.location_id)
+        )
+        if loc:
+            name = loc.name
 
     # Simple template-based generation for MVP
     prompt_templates = {
@@ -172,9 +198,8 @@ async def generate_prompt(
     }
 
     template = prompt_templates.get(generate_data.prompt_type, "{description}")
-    context = generate_data.context or "A dramatic scene"
 
-    prompt_text = template.format(description=context)
+    prompt_text = template.format(name=name, description=context)
 
     prompt = Prompt(
         project_id=generate_data.project_id,
@@ -184,7 +209,7 @@ async def generate_prompt(
         location_id=generate_data.location_id,
         prompt_type=generate_data.prompt_type,
         prompt_text=prompt_text,
-        status="completed",
+        status="template",
     )
     db.add(prompt)
     await db.commit()

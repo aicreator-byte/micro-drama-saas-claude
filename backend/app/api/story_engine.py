@@ -8,9 +8,77 @@ from app.api.auth import get_current_user_id
 from app.api.projects import _verify_project_access
 from app.models.story_engine import StoryEngine, StoryGenerationType, StoryGenerationStatus
 from app.schemas.story_engine import StoryEngineCreate, StoryEngineRead, StoryEngineList, StoryGenerateRequest
+from app.services.ai_client import get_ai_client, AIClientError
 import uuid
+import json
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/story-engine", tags=["story-engine"])
+
+
+def _build_prompt(generation_type: StoryGenerationType, context: dict | None) -> str:
+    """Build prompt for LLM based on generation type and context"""
+    base_context = context or {}
+    user_prompt = base_context.get("prompt", "").strip()
+
+    # If user provided a prompt, it's the primary instruction - prepend it prominently
+    user_instruction = f"\n\nUSER INSTRUCTION (PRIMARY - FOLLOW THIS):\n{user_prompt}\n" if user_prompt else ""
+
+    prompts = {
+        StoryGenerationType.STORY_IDEA: f"""Generate a compelling story idea for a {base_context.get('genre', 'drama')} series.
+Premise: {base_context.get('premise', 'A unique story concept')}
+Protagonist: {base_context.get('protagonist', 'A relatable main character')}
+Goal: {base_context.get('goal', 'A meaningful objective')}
+Deadline/Stakes: {base_context.get('deadline', 'High stakes with time pressure')}{user_instruction}
+
+Return JSON with: premise, main_plot, themes (array)""",
+
+        StoryGenerationType.EPISODE_OUTLINE: f"""Generate an episode outline for episode {base_context.get('episode_number', 1)}.
+Series context: {base_context.get('series_context', 'A drama series')}
+Previous episode: {base_context.get('previous_episode', 'N/A')}{user_instruction}
+
+Return JSON with: episode_number, title, synopsis, key_scenes (array)""",
+
+        StoryGenerationType.FULL_SERIES: f"""Generate a full series outline for {base_context.get('num_episodes', 10)} episodes.
+Series concept: {base_context.get('series_concept', 'A drama series')}
+Genre: {base_context.get('genre', 'drama')}{user_instruction}
+
+Return JSON with: episodes (array of objects with number, title, synopsis)""",
+
+        StoryGenerationType.SCENE_BREAKDOWN: f"""Break down a scene for episode {base_context.get('episode_number', 1)}.
+Scene context: {base_context.get('scene_context', 'A key scene')}
+Characters involved: {base_context.get('characters', 'Main characters')}
+Location: {base_context.get('location', 'Primary location')}{user_instruction}
+
+Return JSON with: scenes (array of objects with number, description, location, characters)""",
+
+        StoryGenerationType.DIALOGUE_GENERATION: f"""Generate dialogue for a scene.
+Scene: {base_context.get('scene_description', 'A tense confrontation')}
+Characters: {base_context.get('characters', 'Protagonist, Antagonist')}
+Tone: {base_context.get('tone', 'dramatic')}{user_instruction}
+
+Return JSON with: dialogues (array of objects with character, text, subtext)""",
+
+        StoryGenerationType.CHARACTER_DEVELOPMENT: f"""Develop a character arc for: {base_context.get('character_name', 'Protagonist')}.
+Role: {base_context.get('role', 'Main character')}
+Starting state: {base_context.get('starting_state', 'Naive/inexperienced')}{user_instruction}
+
+Return JSON with: arc, key_moments (array), internal_conflict, growth_trajectory""",
+
+        StoryGenerationType.CONFLICT_DEVELOPMENT: f"""Develop conflict for a story.
+Main conflict: {base_context.get('main_conflict', 'Protagonist vs Antagonist')}
+Theme: {base_context.get('theme', 'Identity and sacrifice')}{user_instruction}
+
+Return JSON with: main_conflict, sub_conflicts (array), escalation_stages (array), resolution_path""",
+
+        StoryGenerationType.CLIFFHANGER: f"""Generate a cliffhanger ending.
+Context: {base_context.get('context', 'Critical moment in the story')}
+Characters present: {base_context.get('characters', 'Main characters')}{user_instruction}
+
+Return JSON with: cliffhanger, resolution_hook, emotional_impact""",
+    }
+
+    return prompts.get(generation_type, f"Generate content for {generation_type.value}: {json.dumps(base_context)}")
 
 
 @router.post("/generate", response_model=StoryEngineRead, status_code=status.HTTP_201_CREATED)
@@ -19,7 +87,7 @@ async def generate_story(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate story content using AI (placeholder)"""
+    """Generate story content using real LLM with provider fallback"""
     await _verify_project_access(str(generate_data.project_id), user_id, db)
 
     # Create story engine record
@@ -37,64 +105,32 @@ async def generate_story(
     await db.commit()
     await db.refresh(story_gen)
 
-    # Placeholder for AI generation
-    # In production, integrate with LLM provider
+    # Build prompt for LLM
+    prompt = _build_prompt(generate_data.generation_type, generate_data.context)
+    messages = [
+        {"role": "system", "content": "You are a professional screenwriter and story developer. Always return valid JSON only."},
+        {"role": "user", "content": prompt},
+    ]
 
-    # Template-based generation for MVP
-    templates = {
-        StoryGenerationType.STORY_IDEA: {
-            "premise": "A {genre} story about {protagonist} who must {goal} before {deadline}.",
-            "main_plot": "The protagonist faces escalating challenges...",
-            "themes": ["redemption", "identity", "sacrifice"],
-        },
-        StoryGenerationType.EPISODE_OUTLINE: {
-            "episode_number": 1,
-            "title": "Pilot",
-            "synopsis": "Introduction to the world and main conflict.",
-            "key_scenes": ["Opening hook", "Inciting incident", "First turning point"],
-        },
-        StoryGenerationType.FULL_SERIES: {
-            "episodes": [
-                {"number": i, "title": f"Episode {i}", "synopsis": f"Episode {i} synopsis"}
-                for i in range(1, 21)
-            ],
-        },
-        StoryGenerationType.SCENE_BREAKDOWN: {
-            "scenes": [
-                {"number": 1, "description": "Opening scene", "location": "Main location"},
-                {"number": 2, "description": "Conflict scene", "location": "Secondary location"},
-            ],
-        },
-        StoryGenerationType.DIALOGUE_GENERATION: {
-            "dialogues": [
-                {"character": "Protagonist", "text": "I can't believe this is happening."},
-                {"character": "Antagonist", "text": "You should have seen it coming."},
-            ],
-        },
-        StoryGenerationType.CHARACTER_DEVELOPMENT: {
-            "arc": "From naive to experienced",
-            "key_moments": ["Inciting incident", "Dark night of the soul", "Climax"],
-        },
-        StoryGenerationType.CONFLICT_DEVELOPMENT: {
-            "main_conflict": "Protagonist vs Antagonist",
-            "sub_conflicts": ["Internal doubt", "External pressure", "Time constraint"],
-            "escalation": "Rising stakes each episode",
-        },
-        StoryGenerationType.CLIFFHANGER: {
-            "cliffhanger": "The protagonist discovers the truth just as the door opens...",
-            "resolution_hook": "Next episode reveals the consequence.",
-        },
-    }
+    # Call real LLM with fallback
+    ai_client = await get_ai_client(db)
+    try:
+        ai_response = await ai_client.generate(
+            messages=messages,
+            temperature=generate_data.temperature,
+            max_tokens=generate_data.max_tokens,
+        )
 
-    template = templates.get(generate_data.generation_type, {"output": "Generated content"})
-    import json
-    generated_output = json.dumps(template, indent=2)
+        story_gen.generated_output = ai_response.content
+        story_gen.status = StoryGenerationStatus.COMPLETED
+        story_gen.model_used = ai_response.model_used
+        story_gen.tokens_used = ai_response.tokens_used
+        story_gen.completed_at = datetime.now(timezone.utc)
 
-    story_gen.generated_output = generated_output
-    story_gen.status = StoryGenerationStatus.COMPLETED
-    story_gen.tokens_used = 500  # Mock token count
-    from datetime import datetime, timezone
-    story_gen.completed_at = datetime.now(timezone.utc)
+    except AIClientError as e:
+        story_gen.status = StoryGenerationStatus.FAILED
+        story_gen.error_message = f"All providers failed: {e.errors}"
+        story_gen.completed_at = datetime.now(timezone.utc)
 
     await db.commit()
     await db.refresh(story_gen)

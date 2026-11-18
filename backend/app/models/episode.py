@@ -61,6 +61,9 @@ class Episode(Base):
     story_generations: Mapped[list["StoryEngine"]] = relationship(
         "StoryEngine", back_populates="episode", cascade="all, delete-orphan"
     )
+    scene_generations: Mapped[list["SceneEngine"]] = relationship(
+        "SceneEngine", back_populates="episode", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_episodes_project_number", "project_id", "episode_number", unique=True),

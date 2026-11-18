@@ -1,17 +1,21 @@
 """Test configuration and fixtures"""
 import pytest
 import os
+import tempfile
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from app.main import app
 from app.core.database import Base, get_db, engine as app_engine
-from app.models import User, Project, SeriesBible, Character, Location, Episode, Scene, SceneCharacter, Dialogue, Prompt, Asset, GoogleAccount, FlowBridge, StoryEngine
+from app.models import User, Project, SeriesBible, Character, Location, Episode, Scene, SceneCharacter, Dialogue, Prompt, Asset, GoogleAccount, FlowBridge, StoryEngine, AppSettings, Shot, SceneEngine, OAuthState
 
 
-# Create test database - use file-based SQLite for better compatibility
-TEST_DATABASE_URL = "sqlite+aiosqlite:///./test_micro_drama.db"
+# Set required environment variables for tests
+os.environ["NVIDIA_API_KEY"] = "test-key-for-tests"
 
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=True)
+# Create test database - use in-memory SQLite for tests
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 TestAsyncSessionMaker = async_sessionmaker(
     test_engine, class_=AsyncSession, expire_on_commit=False
 )
@@ -29,11 +33,6 @@ async def override_get_db() -> AsyncSession:
 @pytest.fixture(scope="function", autouse=True)
 async def setup_database():
     """Create tables before each test"""
-    # Ensure test database file is removed before each test
-    test_db_path = "./test_micro_drama.db"
-    if os.path.exists(test_db_path):
-        os.remove(test_db_path)
-
     print("SETUP FIXTURE: Starting...")
     print("SETUP: Creating tables in test database...")
     async with test_engine.begin() as conn:

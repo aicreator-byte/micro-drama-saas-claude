@@ -47,6 +47,7 @@ class FlowBridgeRead(BaseModel):
     output_assets: Optional[str]
     notes: Optional[str]
     error_message: Optional[str]
+    fallback_history: Optional[str] = None  # JSON array of fallback attempts
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime]
