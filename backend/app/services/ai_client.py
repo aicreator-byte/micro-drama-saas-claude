@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.settings import AppSettings
+from app.core.config import settings as app_settings
 
 
 @dataclass
@@ -48,7 +49,9 @@ class AIClient:
 
         if not settings:
             # Return default Nvidia provider if configured in env
-            nvidia_key = os.getenv("NVIDIA_API_KEY")
+            # (.env tidak masuk os.environ — fallback ke Settings).
+            nvidia_key = os.getenv("NVIDIA_API_KEY") or getattr(
+                app_settings, "NVIDIA_API_KEY", "") or None
             if nvidia_key:
                 return [
                     AIProvider(
@@ -85,7 +88,8 @@ class AIClient:
     async def _call_nvidia(self, provider: AIProvider, messages: List[dict],
                           temperature: float, max_tokens: int) -> AIResponse:
         """Call Nvidia NIM API"""
-        api_key = os.getenv(provider.key_env)
+        api_key = os.getenv(provider.key_env) or getattr(
+            app_settings, provider.key_env, None)
         if not api_key:
             raise ValueError(f"API key not found in env: {provider.key_env}")
 

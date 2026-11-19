@@ -9,13 +9,16 @@ import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { Select } from "@/components/ui/Select"
 import { Textarea } from "@/components/ui/Textarea"
-import { Plus, Search, Edit, Trash2, MoreVertical, Loader2 } from "lucide-react"
+import { Plus, Search, Edit, Trash2, MoreVertical, Loader2, Sparkles } from "lucide-react"
 import { clsx } from "clsx"
+import { AutoGenerateModal } from "@/components/auto-generate/AutoGenerateModal"
+import type { ProjectRead } from "@/types/api"
 
 export default function ProjectsPage() {
   const { projects, fetchProjects, createProject, deleteProject, updateProject, isLoading } = useProjectStore()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingProject, setEditingProject] = useState<any>(null)
+  const [autoGenerateProject, setAutoGenerateProject] = useState<ProjectRead | null>(null)
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -227,6 +230,15 @@ export default function ProjectsPage() {
                       <Button
                         variant="ghost"
                         size="sm"
+                        onClick={() => setAutoGenerateProject(project)}
+                        className="p-1.5"
+                        title="Auto-Generate"
+                      >
+                        <Sparkles className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => handleEdit(project)}
                         className="p-1.5"
                       >
@@ -248,6 +260,14 @@ export default function ProjectsPage() {
           )}
         </div>
       </div>
+
+      {/* Auto-Generate Modal */}
+      {autoGenerateProject && (
+        <AutoGenerateModal
+          project={autoGenerateProject}
+          onClose={() => setAutoGenerateProject(null)}
+        />
+      )}
 
       {/* Create/Edit Modal */}
       {showCreateModal && (

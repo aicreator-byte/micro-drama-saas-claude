@@ -17,6 +17,7 @@ from app.models.settings import AppSettings
 from app.models.shot import Shot
 from app.models.scene_engine import SceneEngine
 from app.models.oauth_state import OAuthState
+from app.models.auto_generate import AutoGenerateJob, AutoGenerateStep
 
 __all__ = [
     "Base",
@@ -38,4 +39,6 @@ __all__ = [
     "Shot",
     "SceneEngine",
     "OAuthState",
+    "AutoGenerateJob",
+    "AutoGenerateStep",
 ]

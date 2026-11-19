@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
+
+    # AI (Nvidia NIM) — dibaca ai_client sebagai fallback bila key tidak ada
+    # di os.environ (nilai dari .env tidak masuk os.environ).
+    NVIDIA_API_KEY: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 

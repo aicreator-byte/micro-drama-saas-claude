@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import init_db, close_db
-from app.api import auth, projects, series_bible, characters, locations, episodes, scenes, dialogues, prompts, assets, google_accounts, flow_bridge, story_engine, settings as settings_api, shots
+from app.api import auth, projects, series_bible, characters, locations, episodes, scenes, dialogues, prompts, assets, google_accounts, flow_bridge, story_engine, settings as settings_api, shots, auto_generate
 
 
 @asynccontextmanager
@@ -59,6 +59,7 @@ app.include_router(flow_bridge.router, prefix="/api")
 app.include_router(story_engine.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 app.include_router(shots.router, prefix="/api")
+app.include_router(auto_generate.router, prefix="/api")
 
 
 @app.get("/health")

@@ -213,3 +213,14 @@ export const storyEngineApi = {
   get: (projectId: string, id: string) => api.get(`/story-engine/${projectId}/${id}`),
   delete: (projectId: string, id: string) => api.delete(`/story-engine/${projectId}/${id}`),
 }
+
+// Auto-Generate endpoints (Fase 1 backend: POST runs the 5 steps synchronously
+// and returns the finished job; GET is polled only while status === "running").
+export const autoGenerateApi = {
+  create: (projectId: string, data: { title: string; genre?: string; total_episodes?: number; premise?: string }) =>
+    api.post(`/projects/${projectId}/auto-generate`, data),
+  get: (projectId: string, jobId: string) =>
+    api.get(`/projects/${projectId}/auto-generate/${jobId}`),
+  retry: (projectId: string, jobId: string, step: string) =>
+    api.post(`/projects/${projectId}/auto-generate/${jobId}/retry/${step}`),
+}

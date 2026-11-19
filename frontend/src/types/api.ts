@@ -329,3 +329,44 @@ export interface StoryEngineList {
   page_size: number
   total_pages: number
 }
+
+// Auto-Generate (Fase 1 backend, Fase 2 frontend)
+export type AutoGenerateStepName =
+  | "series_bible"
+  | "characters"
+  | "locations"
+  | "episodes"
+  | "prompts"
+
+export type AutoGenerateStepStatus = "pending" | "running" | "completed" | "failed"
+
+export type AutoGenerateJobStatus = "running" | "completed" | "failed"
+
+export interface AutoGenerateCreate {
+  title: string
+  genre?: string
+  total_episodes?: number
+  premise?: string
+}
+
+export interface AutoGenerateStepRead {
+  step: AutoGenerateStepName
+  status: AutoGenerateStepStatus
+  error_message: string | null
+  result_summary: string | null
+  completed_at: string | null
+}
+
+export interface AutoGenerateJobRead {
+  id: string
+  project_id: string
+  title: string
+  genre: string | null
+  total_episodes: number
+  premise: string | null
+  status: AutoGenerateJobStatus
+  error_message: string | null
+  steps: AutoGenerateStepRead[]
+  created_at: string
+  completed_at: string | null
+}

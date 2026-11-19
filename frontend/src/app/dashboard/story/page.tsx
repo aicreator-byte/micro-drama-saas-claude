@@ -7,9 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/Button"
 import { Textarea } from "@/components/ui/Textarea"
 import { Select } from "@/components/ui/Select"
-import { Sparkles, Trash2, Loader2, AlertCircle } from "lucide-react"
+import { Sparkles, Trash2, Loader2, AlertCircle, Wand2 } from "lucide-react"
 import { clsx } from "clsx"
 import { useAuthStore } from "@/lib/auth-store"
+import { AutoGenerateModal } from "@/components/auto-generate/AutoGenerateModal"
 
 // Audit ronde 2 P1-15 (F-L7): the story engine had API + store actions but
 // no UI at all. This page wires them: pick a project + generation type,
@@ -39,6 +40,9 @@ export default function StoryPage() {
   const [prompt, setPrompt] = useState("")
   const [generating, setGenerating] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  const [showAutoGenerate, setShowAutoGenerate] = useState(false)
+
+  const selectedProject = projects.find((p) => p.id === selectedProjectId) || null
 
   useEffect(() => {
     fetchProjects()
@@ -95,6 +99,40 @@ export default function StoryPage() {
             Failures are recorded with status “failed” and an error message — nothing is silently dropped.
           </p>
         </div>
+
+        <Card variant="outlined">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Wand2 className="w-5 h-5 text-primary-600 dark:text-primary-400" />
+              Auto-Generate
+            </CardTitle>
+            <CardDescription>
+              One click fills in everything for the selected project — series bible,
+              characters, locations, episodes, and video prompts — in 5 steps.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              onClick={() => setShowAutoGenerate(true)}
+              disabled={!selectedProject}
+            >
+              <Sparkles className="w-4 h-4" />
+              Auto-Generate {selectedProject ? `“${selectedProject.title}”` : ""}
+            </Button>
+            {!selectedProject && (
+              <p className="text-sm text-dark-500 dark:text-dark-400 mt-2">
+                Create a project first, then auto-generate its content here.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {showAutoGenerate && selectedProject && (
+          <AutoGenerateModal
+            project={selectedProject}
+            onClose={() => setShowAutoGenerate(false)}
+          />
+        )}
 
         <Card variant="outlined">
           <CardHeader>
