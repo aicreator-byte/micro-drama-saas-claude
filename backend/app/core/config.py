@@ -7,8 +7,12 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
+    # .env is read relative to the backend/ directory (where this settings
+    # module lives), NOT relative to the process working directory — running
+    # uvicorn from any other CWD used to silently lose the key (future-dev
+    # 3b). Always start the server via backend/start.sh.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=Path(__file__).resolve().parents[2] / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )

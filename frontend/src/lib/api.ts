@@ -214,8 +214,9 @@ export const storyEngineApi = {
   delete: (projectId: string, id: string) => api.delete(`/story-engine/${projectId}/${id}`),
 }
 
-// Auto-Generate endpoints (Fase 1 backend: POST runs the 5 steps synchronously
-// and returns the finished job; GET is polled only while status === "running").
+// Auto-Generate endpoints (future-dev 3a: POST runs the 5 steps in a
+// background task and returns immediately with status "running"; the modal
+// polls GET every 2s for live per-step progress).
 export const autoGenerateApi = {
   create: (projectId: string, data: { title: string; genre?: string; total_episodes?: number; premise?: string }) =>
     api.post(`/projects/${projectId}/auto-generate`, data),
@@ -223,4 +224,9 @@ export const autoGenerateApi = {
     api.get(`/projects/${projectId}/auto-generate/${jobId}`),
   retry: (projectId: string, jobId: string, step: string) =>
     api.post(`/projects/${projectId}/auto-generate/${jobId}/retry/${step}`),
+}
+
+// Dashboard endpoints (future-dev 2f: real counts, not hardcoded 0).
+export const dashboardApi = {
+  getStats: () => api.get("/dashboard/stats"),
 }

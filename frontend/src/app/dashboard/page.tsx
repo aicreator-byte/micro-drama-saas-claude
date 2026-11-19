@@ -1,9 +1,11 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useProjectStore } from "@/lib/project-store"
 import { useAuthStore } from "@/lib/auth-store"
+import { dashboardApi } from "@/lib/api"
+import type { DashboardStats } from "@/types/api"
 import { DashboardLayout } from "@/components/layout/DashboardLayout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -12,16 +14,25 @@ import { Plus, BookOpen, Users, MapPin, Clapperboard, Film, Type, Image, Puzzle,
 export default function DashboardPage() {
   const { user } = useAuthStore()
   const { projects, fetchProjects, isLoading: projectsLoading } = useProjectStore()
+  const [stats, setStats] = useState<DashboardStats | null>(null)
 
   useEffect(() => {
     fetchProjects()
   }, [fetchProjects])
 
-  const stats = [
-    { name: "Projects", count: projects.length, icon: BookOpen, href: "/dashboard/projects", color: "text-blue-600 bg-blue-100 dark:text-blue-400 dark:bg-blue-900/30" },
-    { name: "Characters", count: 0, icon: Users, href: "/dashboard/characters", color: "text-purple-600 bg-purple-100 dark:text-purple-400 dark:bg-purple-900/30" },
-    { name: "Locations", count: 0, icon: MapPin, href: "/dashboard/locations", color: "text-green-600 bg-green-100 dark:text-green-400 dark:bg-green-900/30" },
-    { name: "Episodes", count: 0, icon: Clapperboard, href: "/dashboard/episodes", color: "text-orange-600 bg-orange-100 dark:text-orange-400 dark:bg-orange-900/30" },
+  // Real counts from the DB (future-dev 2f) — no more hardcoded 0.
+  useEffect(() => {
+    dashboardApi
+      .getStats()
+      .then((res) => setStats(res.data))
+      .catch(() => {})
+  }, [])
+
+  const statCards = [
+    { name: "Projects", count: stats?.projects ?? projects.length, icon: BookOpen, href: "/dashboard/projects", color: "text-blue-600 bg-blue-100 dark:text-blue-400 dark:bg-blue-900/30" },
+    { name: "Characters", count: stats?.characters ?? 0, icon: Users, href: "/dashboard/characters", color: "text-purple-600 bg-purple-100 dark:text-purple-400 dark:bg-purple-900/30" },
+    { name: "Locations", count: stats?.locations ?? 0, icon: MapPin, href: "/dashboard/locations", color: "text-green-600 bg-green-100 dark:text-green-400 dark:bg-green-900/30" },
+    { name: "Episodes", count: stats?.episodes ?? 0, icon: Clapperboard, href: "/dashboard/episodes", color: "text-orange-600 bg-orange-100 dark:text-orange-400 dark:bg-orange-900/30" },
   ]
 
   return (
@@ -39,7 +50,7 @@ export default function DashboardPage() {
 
         {/* Stats cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {stats.map((stat) => (
+          {statCards.map((stat) => (
             <Link key={stat.name} href={stat.href} className="block">
               <Card className="hover:shadow-md transition-shadow">
                 <CardContent className="p-6">

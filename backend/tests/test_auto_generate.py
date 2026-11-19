@@ -2,7 +2,13 @@
 
 The LLM seam is app.api.auto_generate._llm_json, monkeypatched here with
 canned JSON so no real provider is called.
+
+Future-dev: jobs run ASYNC — POST returns 201 with status "running" and
+the steps run in a background task, so tests poll GET until the job is
+terminal (helper _poll_job).
 """
+import asyncio
+import time
 import uuid
 
 import pytest
@@ -35,6 +41,24 @@ async def make_project(async_client: AsyncClient, headers: dict) -> str:
     }, headers=headers)
     assert response.status_code == 201
     return response.json()["id"]
+
+
+async def _poll_job(client, project_id, job_id, headers, timeout=15.0):
+    """Poll GET until the job is terminal; return the job JSON."""
+    end = time.monotonic() + timeout
+    while True:
+        res = await client.get(
+            f"/api/projects/{project_id}/auto-generate/{job_id}", headers=headers
+        )
+        assert res.status_code == 200
+        job = res.json()
+        if job["status"] in ("completed", "failed"):
+            return job
+        if time.monotonic() > end:
+            raise AssertionError(
+                f"job did not finish in {timeout}s (last status: {job['status']})"
+            )
+        await asyncio.sleep(0.05)
 
 
 def _bible_payload(n_episodes: int = 3) -> dict:
@@ -108,6 +132,8 @@ def _prompts_payload(n_episodes: int = 3) -> dict:
 
 
 async def _fake_llm_ok(db, user_prompt: str, max_tokens: int = 4000) -> dict:
+    if "Classify the genre" in user_prompt:
+        return {"genre": "romance"}
     if "series bible" in user_prompt:
         return _bible_payload()
     if "main cast" in user_prompt:
@@ -127,10 +153,10 @@ async def _fake_llm_fail_characters(db, user_prompt: str, max_tokens: int = 4000
     return await _fake_llm_ok(db, user_prompt, max_tokens)
 
 
-def _post_job(client, project_id, headers, total_episodes=3):
+def _post_job(client, project_id, headers, total_episodes=3, genre="Romance"):
     return client.post(f"/api/projects/{project_id}/auto-generate", json={
         "title": "THE BILLIONAIRE CEO",
-        "genre": "Romance",
+        "genre": genre,
         "total_episodes": total_episodes,
         "premise": "A struggling singer marries a cold CEO.",
     }, headers=headers)
@@ -145,7 +171,9 @@ async def test_auto_generate_full_run(async_client: AsyncClient, monkeypatch):
 
     response = await _post_job(async_client, project_id, headers)
     assert response.status_code == 201
-    job = response.json()
+    # Async: POST returns immediately with the job still running.
+    assert response.json()["status"] == "running"
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
     assert job["status"] == "completed"
     assert [s["step"] for s in job["steps"]] == [
         "series_bible", "characters", "locations", "episodes", "prompts",
@@ -176,6 +204,24 @@ async def test_auto_generate_full_run(async_client: AsyncClient, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_post_returns_running_immediately(async_client: AsyncClient, monkeypatch):
+    """Future-dev 3a: POST does not block on the 5 steps — it returns
+    201 with status running and the steps progress via polling."""
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", _fake_llm_ok)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    response = await _post_job(async_client, project_id, headers)
+    assert response.status_code == 201
+    job = response.json()
+    assert job["status"] == "running"
+    assert len(job["steps"]) == 5
+    # Polling shows the job finishing (proves the background task runs).
+    job = await _poll_job(async_client, project_id, job["id"], headers)
+    assert job["status"] == "completed"
+
+
+@pytest.mark.anyio
 async def test_step_failure_stops_pipeline(async_client: AsyncClient, monkeypatch):
     """Characters step fails -> job failed, later steps stay pending, nothing half-written."""
     monkeypatch.setattr(auto_generate_mod, "_llm_json", _fake_llm_fail_characters)
@@ -184,7 +230,7 @@ async def test_step_failure_stops_pipeline(async_client: AsyncClient, monkeypatc
 
     response = await _post_job(async_client, project_id, headers)
     assert response.status_code == 201
-    job = response.json()
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
     assert job["status"] == "failed"
     by_step = {s["step"]: s["status"] for s in job["steps"]}
     assert by_step == {
@@ -208,7 +254,7 @@ async def test_retry_failed_step(async_client: AsyncClient, monkeypatch):
     project_id = await make_project(async_client, headers)
 
     response = await _post_job(async_client, project_id, headers)
-    job = response.json()
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
     assert job["status"] == "failed"
     job_id = job["id"]
 
@@ -218,7 +264,8 @@ async def test_retry_failed_step(async_client: AsyncClient, monkeypatch):
         headers=headers,
     )
     assert retry.status_code == 200
-    job = retry.json()
+    assert retry.json()["status"] == "running"
+    job = await _poll_job(async_client, project_id, job_id, headers)
     assert job["status"] == "completed"
     assert all(s["status"] == "completed" for s in job["steps"])
 
@@ -241,10 +288,12 @@ async def test_rerun_is_idempotent(async_client: AsyncClient, monkeypatch):
     project_id = await make_project(async_client, headers)
 
     first = await _post_job(async_client, project_id, headers)
-    assert first.json()["status"] == "completed"
+    job = await _poll_job(async_client, project_id, first.json()["id"], headers)
+    assert job["status"] == "completed"
     second = await _post_job(async_client, project_id, headers)
     assert second.status_code == 201
-    assert second.json()["status"] == "completed"
+    job = await _poll_job(async_client, project_id, second.json()["id"], headers)
+    assert job["status"] == "completed"
 
     chars = await async_client.get(f"/api/characters/{project_id}", headers=headers)
     assert len(chars.json()) == 5
@@ -254,6 +303,33 @@ async def test_rerun_is_idempotent(async_client: AsyncClient, monkeypatch):
     assert eps.json()["total"] == 3
     prompts = await async_client.get(f"/api/prompts/{project_id}", headers=headers)
     assert prompts.json()["total"] == 3
+
+
+@pytest.mark.anyio
+async def test_rerun_makes_no_llm_calls(async_client: AsyncClient, monkeypatch):
+    """Future-dev 2e: a re-run reuses completed work (bible plan, stored
+    episodes, existing prompts) instead of spending another LLM call."""
+    calls = {"n": 0}
+
+    async def counting_fake(db, user_prompt, max_tokens=4000):
+        calls["n"] += 1
+        return await _fake_llm_ok(db, user_prompt, max_tokens)
+
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", counting_fake)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    first = await _post_job(async_client, project_id, headers)
+    job = await _poll_job(async_client, project_id, first.json()["id"], headers)
+    assert job["status"] == "completed"
+    # bible + characters + locations + prompts (episodes reuse the bible plan).
+    assert calls["n"] == 4
+
+    calls["n"] = 0
+    second = await _post_job(async_client, project_id, headers)
+    job = await _poll_job(async_client, project_id, second.json()["id"], headers)
+    assert job["status"] == "completed"
+    assert calls["n"] == 0
 
 
 @pytest.mark.anyio
@@ -272,6 +348,8 @@ async def test_get_job(async_client: AsyncClient, monkeypatch):
     assert got.status_code == 200
     assert got.json()["id"] == job_id
     assert len(got.json()["steps"]) == 5
+    # Wait for the background job so no task outlives the test.
+    await _poll_job(async_client, project_id, job_id, headers)
 
 
 @pytest.mark.anyio
@@ -311,3 +389,147 @@ async def test_retry_unknown_step(async_client: AsyncClient, monkeypatch):
         headers=headers,
     )
     assert response.status_code == 400
+    await _poll_job(async_client, project_id, job_id, headers)
+
+
+@pytest.mark.anyio
+async def test_whitespace_title_rejected(async_client: AsyncClient, monkeypatch):
+    """Future-dev 2b: a whitespace-only title is a 422; a padded title
+    is stored stripped."""
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", _fake_llm_ok)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    blank = await async_client.post(
+        f"/api/projects/{project_id}/auto-generate",
+        json={"title": "   ", "total_episodes": 3},
+        headers=headers,
+    )
+    assert blank.status_code == 422
+
+    padded = await async_client.post(
+        f"/api/projects/{project_id}/auto-generate",
+        json={"title": "  THE BILLIONAIRE CEO  ", "genre": "Romance",
+              "total_episodes": 3},
+        headers=headers,
+    )
+    assert padded.status_code == 201
+    assert padded.json()["title"] == "THE BILLIONAIRE CEO"
+    await _poll_job(async_client, project_id, padded.json()["id"], headers)
+
+
+@pytest.mark.anyio
+async def test_genre_inferred_from_title(async_client: AsyncClient, monkeypatch):
+    """Future-dev 2c: with no genre given, step 1 infers it from the
+    title via LLM and stores it on the job."""
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", _fake_llm_ok)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    response = await _post_job(async_client, project_id, headers, genre=None)
+    assert response.status_code == 201
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
+    assert job["status"] == "completed"
+    assert job["genre"] == "romance"
+
+
+@pytest.mark.anyio
+async def test_genre_unknown_stays_unset(async_client: AsyncClient, monkeypatch):
+    """Future-dev 2c: when the LLM cannot classify the title, the genre
+    stays unset (None) — never silently defaulted to 'drama'."""
+    async def fake_unknown_genre(db, user_prompt, max_tokens=4000):
+        if "Classify the genre" in user_prompt:
+            return {"genre": "western"}
+        return await _fake_llm_ok(db, user_prompt, max_tokens)
+
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", fake_unknown_genre)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    response = await _post_job(async_client, project_id, headers, genre=None)
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
+    assert job["status"] == "completed"
+    assert job["genre"] is None
+
+
+@pytest.mark.anyio
+async def test_episode_count_enforced(async_client: AsyncClient, monkeypatch):
+    """Future-dev 2a: a plan covering fewer than total_episodes fails the
+    episodes step instead of completing with too few episodes."""
+    async def fake_short_plan(db, user_prompt, max_tokens=4000):
+        if "series bible" in user_prompt:
+            return _bible_payload(2)
+        if "Plan the episodes" in user_prompt:
+            return {"episodes": _bible_payload(2)["episodes"]}
+        return await _fake_llm_ok(db, user_prompt, max_tokens)
+
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", fake_short_plan)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    response = await _post_job(async_client, project_id, headers, total_episodes=5)
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
+    assert job["status"] == "failed"
+    by_step = {s["step"]: s for s in job["steps"]}
+    assert by_step["episodes"]["status"] == "failed"
+    assert "missing episode" in (by_step["episodes"]["error_message"] or "").lower()
+    assert by_step["prompts"]["status"] == "pending"
+
+    eps = await async_client.get(f"/api/episodes/{project_id}", headers=headers)
+    assert eps.json()["total"] == 0
+
+
+@pytest.mark.anyio
+async def test_prompts_coverage_retries_missing_episode(async_client: AsyncClient, monkeypatch):
+    """Future-dev P1: when the LLM skips an episode in the prompts batch,
+    the step retries just the missing episode instead of completing with
+    partial coverage."""
+    state = {"prompt_calls": 0}
+
+    async def fake_missing_once(db, user_prompt, max_tokens=4000):
+        if "video generation prompt" in user_prompt:
+            state["prompt_calls"] += 1
+            if state["prompt_calls"] == 1:
+                return {"prompts": [
+                    {"episode_number": 1, "prompt_text": "Prompt one."},
+                    {"episode_number": 3, "prompt_text": "Prompt three."},
+                ]}
+            return _prompts_payload(3)
+        return await _fake_llm_ok(db, user_prompt, max_tokens)
+
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", fake_missing_once)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    response = await _post_job(async_client, project_id, headers)
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
+    assert job["status"] == "completed"
+    assert state["prompt_calls"] == 2
+
+    prompts = await async_client.get(f"/api/prompts/{project_id}", headers=headers)
+    assert prompts.json()["total"] == 3
+
+
+@pytest.mark.anyio
+async def test_prompts_coverage_fails_when_still_missing(async_client: AsyncClient, monkeypatch):
+    """Future-dev P1: when the LLM still skips an episode after the
+    retry, the prompts step FAILS (naming the missing episode) instead
+    of completing with partial coverage."""
+    async def fake_always_missing(db, user_prompt, max_tokens=4000):
+        if "video generation prompt" in user_prompt:
+            return {"prompts": [
+                {"episode_number": 1, "prompt_text": "Prompt one."},
+                {"episode_number": 3, "prompt_text": "Prompt three."},
+            ]}
+        return await _fake_llm_ok(db, user_prompt, max_tokens)
+
+    monkeypatch.setattr(auto_generate_mod, "_llm_json", fake_always_missing)
+    headers = await get_auth_headers(async_client)
+    project_id = await make_project(async_client, headers)
+
+    response = await _post_job(async_client, project_id, headers)
+    job = await _poll_job(async_client, project_id, response.json()["id"], headers)
+    assert job["status"] == "failed"
+    by_step = {s["step"]: s for s in job["steps"]}
+    assert by_step["prompts"]["status"] == "failed"
+    assert "2" in (by_step["prompts"]["error_message"] or "")

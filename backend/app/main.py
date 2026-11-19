@@ -5,13 +5,17 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import init_db, close_db
-from app.api import auth, projects, series_bible, characters, locations, episodes, scenes, dialogues, prompts, assets, google_accounts, flow_bridge, story_engine, settings as settings_api, shots, auto_generate
+from app.api import auth, projects, series_bible, characters, locations, episodes, scenes, dialogues, prompts, assets, google_accounts, flow_bridge, story_engine, settings as settings_api, shots, auto_generate, dashboard
+from app.api.auto_generate import _mark_interrupted_jobs_failed
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    # Jobs left RUNNING by a previous server restart are failed so their
+    # steps can be retried instead of staying stuck forever (future-dev 3a).
+    await _mark_interrupted_jobs_failed()
     yield
     # Shutdown
     await close_db()
@@ -60,6 +64,7 @@ app.include_router(story_engine.router, prefix="/api")
 app.include_router(settings_api.router, prefix="/api")
 app.include_router(shots.router, prefix="/api")
 app.include_router(auto_generate.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
 
 
 @app.get("/health")

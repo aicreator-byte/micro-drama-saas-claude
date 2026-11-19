@@ -12,8 +12,18 @@ from app.models import User, Project, SeriesBible, Character, Location, Episode,
 # Set required environment variables for tests
 os.environ["NVIDIA_API_KEY"] = "test-key-for-tests"
 
-# Create test database - use in-memory SQLite for tests
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+# Test database — a temp FILE, not :memory:.
+#
+# The async auto-generate job runs in a background task while the test
+# polls GET from another session. SQLite :memory: uses a single shared
+# connection (SingletonThreadPool), so two concurrent sessions corrupt
+# each other's transaction state (steps stuck at RUNNING, job FAILED).
+# A file DB gives each session its own pooled connection, like
+# production (micro_drama.db), and concurrent sessions then see each
+# other's commits correctly.
+_fd, _test_db_path = tempfile.mkstemp(suffix=".db", prefix="micro_drama_test_")
+os.close(_fd)
+TEST_DATABASE_URL = f"sqlite+aiosqlite:///{_test_db_path}"
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 TestAsyncSessionMaker = async_sessionmaker(
@@ -28,6 +38,16 @@ async def override_get_db() -> AsyncSession:
             yield session
         finally:
             await session.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_db():
+    """Remove the temp test database file at the end of the session."""
+    yield
+    try:
+        os.unlink(_test_db_path)
+    except OSError:
+        pass
 
 
 @pytest.fixture(scope="function", autouse=True)

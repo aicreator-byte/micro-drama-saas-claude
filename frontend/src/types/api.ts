@@ -370,3 +370,11 @@ export interface AutoGenerateJobRead {
   created_at: string
   completed_at: string | null
 }
+
+// Dashboard stats (future-dev 2f) — real counts from GET /api/dashboard/stats.
+export interface DashboardStats {
+  projects: number
+  characters: number
+  locations: number
+  episodes: number
+}

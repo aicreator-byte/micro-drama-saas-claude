@@ -14,9 +14,10 @@ import { Sparkles, Loader2, CheckCircle2, XCircle, AlertCircle, RotateCcw, X } f
 import { clsx } from "clsx"
 
 // Fase 2 — Auto-Generate: satu modal untuk form input + progres 5 langkah +
-// retry per langkah gagal. Kontrak backend (Fase 1): POST /api/projects/{id}/
-// auto-generate menjalankan 5 langkah sinkron dan mengembalikan job yang
-// sudah terminal; polling GET hanya berjaga bila status masih "running".
+// retry per langkah gagal. Kontrak backend (future-dev 3a): POST
+// /api/projects/{id}/auto-generate menjalankan 5 langkah di background dan
+// mengembalikan job "running" seketika; modal mem-poll GET tiap 2 detik
+// sampai job terminal, menampilkan progres per langkah.
 export const STEP_ORDER: AutoGenerateStepName[] = [
   "series_bible",
   "characters",
@@ -34,7 +35,7 @@ export const STEP_LABELS: Record<AutoGenerateStepName, string> = {
 }
 
 const GENRE_OPTIONS = [
-  { value: "", label: "Auto (from title)" },
+  { value: "", label: "Auto-detect (AI infers from title)" },
   { value: "drama", label: "Drama" },
   { value: "romance", label: "Romance" },
   { value: "thriller", label: "Thriller" },
@@ -53,6 +54,28 @@ const RESULT_LINKS = [
   { name: "Episodes", href: "/dashboard/episodes" },
   { name: "Prompts", href: "/dashboard/prompts" },
 ]
+
+function stepSummaryText(step: { status: string; result_summary: string | null }): string | null {
+  // One-line result summary per completed step (future-dev P2-5): what the
+  // step actually produced, so the modal is not just status badges.
+  if (step.status !== "completed" || !step.result_summary) return null
+  let summary: any
+  try {
+    summary = JSON.parse(step.result_summary)
+  } catch {
+    return null
+  }
+  if (summary.skipped && summary.reason) return `Skipped — ${summary.reason}`
+  if (typeof summary.episodes_planned === "number")
+    return `Planned ${summary.episodes_planned} episode${summary.episodes_planned === 1 ? "" : "s"}`
+  if (typeof summary.created === "number") {
+    const skipped = typeof summary.skipped === "number" && summary.skipped > 0
+      ? ` · skipped ${summary.skipped}`
+      : ""
+    return `Created ${summary.created}${skipped}`
+  }
+  return null
+}
 
 function stepStatusIcon(status: string) {
   if (status === "completed") return <CheckCircle2 className="w-5 h-5 text-green-600 dark:text-green-400" />
@@ -102,8 +125,8 @@ export function AutoGenerateModal({
   const [error, setError] = useState<string | null>(null)
   const refreshedJobId = useRef<string | null>(null)
 
-  // Poll while the job is still running (backend Fase 1 runs synchronously,
-  // so this normally never fires — it only guards a future async change).
+  // Poll while the job is still running (backend runs async, so this is
+  // the live per-step progress — one poll every 2s, not a single wait).
   useEffect(() => {
     if (!job || job.status !== "running") return
     const timer = setInterval(async () => {
@@ -174,10 +197,17 @@ export function AutoGenerateModal({
     }
   }
 
+  // Overlay click must NOT close the modal while a job is running
+  // (future-dev 2d): closing mid-run would hide the live progress.
+  const handleOverlayClick = () => {
+    if (job?.status === "running") return
+    onClose()
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-      onClick={onClose}
+      onClick={handleOverlayClick}
     >
       <Card
         className="w-full max-w-lg max-h-[90vh] overflow-y-auto"
@@ -191,7 +221,8 @@ export function AutoGenerateModal({
             </span>
             <button
               onClick={onClose}
-              className="text-dark-400 hover:text-dark-600 dark:hover:text-dark-300"
+              disabled={job?.status === "running"}
+              className="text-dark-400 hover:text-dark-600 dark:hover:text-dark-300 disabled:opacity-40 disabled:cursor-not-allowed"
               aria-label="Close"
             >
               <X className="w-5 h-5" />
@@ -215,6 +246,11 @@ export function AutoGenerateModal({
               placeholder="Enter series title"
               required
             />
+            {title && !title.trim() && (
+              <p className="text-sm text-red-600 dark:text-red-400 -mt-2">
+                Title cannot be blank.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <Select
                 label="Genre"
@@ -307,6 +343,11 @@ export function AutoGenerateModal({
                       {step?.error_message && (
                         <p className="text-sm text-red-600 dark:text-red-400 mt-1">
                           Error: {step.error_message}
+                        </p>
+                      )}
+                      {step && stepSummaryText(step) && (
+                        <p className="text-sm text-dark-500 dark:text-dark-400 mt-1">
+                          {stepSummaryText(step)}
                         </p>
                       )}
                     </div>
