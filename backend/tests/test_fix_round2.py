@@ -342,3 +342,56 @@ class TestShotCrud:
         other = await get_auth_headers(async_client, "other@example.com", "otheruser")
         response = await async_client.get(f"/api/shots/{scene_id}", headers=other)
         assert response.status_code == 404
+
+
+class TestCleanupUndecryptableCredentials:
+    """Audit ronde 2 fix: rows encrypted under the old (truncated-key)
+    derivation must be cleared, not left to 500 every caller."""
+
+    @pytest.mark.anyio
+    async def test_clears_bad_ciphertext_keeps_good(self, async_client: AsyncClient):
+        from sqlalchemy import select
+
+        from app.core.security import decrypt_data, encrypt_data
+        from app.models import User
+        from app.models.google_account import GoogleAccount
+        from app.services.google_account_service import (
+            cleanup_undecryptable_credentials,
+        )
+        from conftest import TestAsyncSessionMaker
+
+        headers = await get_auth_headers(async_client, "clean@example.com", "cleanuser")
+        async with TestAsyncSessionMaker() as db:
+            user = await db.scalar(select(User).where(User.email == "clean@example.com"))
+            bad = GoogleAccount(
+                user_id=user.id, email="bad@example.com", account_index=0,
+                password_encrypted="gAAAAABq_lOJR0XVbwYl-broken-ciphertext",
+            )
+            good = GoogleAccount(
+                user_id=user.id, email="good@example.com", account_index=1,
+                password_encrypted=encrypt_data("real-password"),
+                access_token_encrypted=encrypt_data("real-token"),
+            )
+            db.add_all([bad, good])
+            await db.commit()
+
+            cleared = await cleanup_undecryptable_credentials(db)
+            assert cleared == {"password": 1, "access_token": 0, "refresh_token": 0}
+
+            bad_after = await db.scalar(select(GoogleAccount).where(GoogleAccount.id == bad.id))
+            assert bad_after.password_encrypted is None
+            good_after = await db.scalar(select(GoogleAccount).where(GoogleAccount.id == good.id))
+            assert decrypt_data(good_after.password_encrypted) == "real-password"
+            assert decrypt_data(good_after.access_token_encrypted) == "real-token"
+
+    @pytest.mark.anyio
+    async def test_cleanup_noop_when_nothing_broken(self, async_client: AsyncClient):
+        from app.services.google_account_service import (
+            cleanup_undecryptable_credentials,
+        )
+        from conftest import TestAsyncSessionMaker
+
+        async with TestAsyncSessionMaker() as db:
+            assert await cleanup_undecryptable_credentials(db) == {
+                "password": 0, "access_token": 0, "refresh_token": 0,
+            }

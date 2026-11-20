@@ -11,6 +11,21 @@ and each step's status is persisted, so the client polls
 GET /projects/{id}/auto-generate/{job_id} for live per-step progress.
 The modal polls every 2s while the job is running.
 
+Multi-worker safety (future-dev round 2): a job is CLAIMED with one
+atomic UPDATE before it runs (see claim_job) — the claim is exclusive
+per project, so the same job can never run twice (double retry, a
+restart sweep racing a live worker) and two jobs for one project can
+never run at the same time. The claim is a lease (LEASE_SECONDS) that
+the runner renews before every step; a worker that dies stops
+renewing, so after the lease expires another worker may take over.
+The startup sweep only fails RUNNING jobs whose lease has expired.
+SQLite is single-writer, so the lease (600s) must exceed the longest
+single step (one LLM call, ~1-2 min in practice) — renewal happens
+between steps, never mid-step. Audit ronde 2 fix: the lock is also
+claimed inside the create request itself, so two simultaneous creates
+cannot both return 201 — the atomic claim arbitrates and the loser
+gets 409 with its row deleted (see create_auto_generate_job).
+
 LLM goes through the leg's existing AI client (Nvidia NIM via env key,
 never stored in DB). No video is generated here: step 5 only writes
 VIDEO_GENERATION prompt rows; the actual video is still made manually in
@@ -18,12 +33,24 @@ Google Flow (spec section 8).
 """
 import asyncio
 import json
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
+
+logger = logging.getLogger(__name__)
+
+# Worker identity: one id per process (uvicorn worker). Used as the
+# lock owner in claim_job so a lock can be released only by its owner.
+WORKER_ID = uuid.uuid4().hex
+# Lease length (s). Must exceed the longest single step; renewed before
+# every step (see _run_from). A dead worker's lease lapses at most this
+# long after it dies before another worker may take over.
+LEASE_SECONDS = 600
 
 from app.api.auth import get_current_user_id
 from app.api.projects import _verify_project_access
@@ -69,6 +96,16 @@ GENRE_OPTIONS = (
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    """SQLite returns stored datetimes naive; treat them as UTC so
+    comparisons with _now() never raise TypeError."""
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
 
 
 def _genre_label(job: AutoGenerateJob) -> str:
@@ -560,6 +597,99 @@ STEP_RUNNERS = {
 }
 
 
+# ---------------------------------------------------------------- job locking
+# (future-dev round 2 — multi-worker safe execution)
+
+async def claim_job(
+    db: AsyncSession,
+    job_id: uuid.UUID,
+    project_id: uuid.UUID,
+    worker_id: str,
+    lease_seconds: int = LEASE_SECONDS,
+) -> bool:
+    """Atomically claim a RUNNING job for `worker_id`.
+
+    One UPDATE wins the lock: the job must be RUNNING with an expired
+    (or never-set) lease, AND no other job for the same project may
+    hold a live lock. Losers get rowcount 0 and must not run the job.
+    One exception: a lock placed by the create endpoint
+    (owner "create:<job_id>") may be taken over by the background
+    runner of that same job — the create claim only reserves the slot
+    until the runner starts. Re-claiming by the SAME worker id is NOT
+    allowed: a duplicate runner task in the same process must be
+    blocked, or one job would execute twice.
+    """
+    now = _now()
+    other = aliased(AutoGenerateJob)
+    conflict = (
+        select(1)
+        .where(
+            other.project_id == project_id,
+            other.id != job_id,
+            other.locked_by.is_not(None),
+            other.lease_expires_at > now,
+        )
+        .exists()
+    )
+    result = await db.execute(
+        update(AutoGenerateJob)
+        .where(
+            AutoGenerateJob.id == job_id,
+            AutoGenerateJob.status == AutoGenerateJobStatus.RUNNING,
+            or_(
+                AutoGenerateJob.lease_expires_at.is_(None),
+                AutoGenerateJob.lease_expires_at < now,
+                # Takeover of the create-time placeholder lock (see
+                # create_auto_generate_job): the runner of THIS job may
+                # take over the lock the create request placed. Any
+                # other live lock — including one held by the same
+                # worker id — blocks the claim (duplicate runner guard).
+                AutoGenerateJob.locked_by == f"create:{job_id}",
+            ),
+            ~conflict,
+        )
+        .values(
+            locked_by=worker_id,
+            locked_at=now,
+            lease_expires_at=now + timedelta(seconds=lease_seconds),
+        )
+    )
+    await db.commit()
+    return result.rowcount == 1
+
+
+async def renew_lease(
+    db: AsyncSession,
+    job_id: uuid.UUID,
+    worker_id: str,
+    lease_seconds: int = LEASE_SECONDS,
+) -> bool:
+    """Extend our own lease. Only the lock owner may renew."""
+    result = await db.execute(
+        update(AutoGenerateJob)
+        .where(
+            AutoGenerateJob.id == job_id,
+            AutoGenerateJob.locked_by == worker_id,
+        )
+        .values(lease_expires_at=_now() + timedelta(seconds=lease_seconds))
+    )
+    await db.commit()
+    return result.rowcount == 1
+
+
+async def release_job(db: AsyncSession, job_id: uuid.UUID, worker_id: str) -> None:
+    """Drop our lock (job finished/failed). Only the owner may release."""
+    await db.execute(
+        update(AutoGenerateJob)
+        .where(
+            AutoGenerateJob.id == job_id,
+            AutoGenerateJob.locked_by == worker_id,
+        )
+        .values(locked_by=None, locked_at=None, lease_expires_at=None)
+    )
+    await db.commit()
+
+
 # ---------------------------------------------------------------- runner
 
 async def _load_steps(db: AsyncSession, job_id: uuid.UUID) -> list[AutoGenerateStep]:
@@ -576,14 +706,21 @@ async def _run_from(
     job: AutoGenerateJob,
     project: Project,
     start_position: int,
+    worker_id: str | None = None,
 ) -> None:
-    """Run pending steps from start_position; stops at the first failure."""
+    """Run pending steps from start_position; stops at the first failure.
+
+    When `worker_id` is given, the job lease is renewed before every
+    step (the runner owns the lock for the whole run).
+    """
     steps = await _load_steps(db, job.id)
     for step in steps:
         if step.position < start_position:
             continue
         if step.status == AutoGenerateStepStatus.COMPLETED:
             continue
+        if worker_id is not None:
+            await renew_lease(db, job.id, worker_id)
         step.status = AutoGenerateStepStatus.RUNNING
         step.error_message = None
         await db.commit()
@@ -613,14 +750,49 @@ async def _run_job_in_background(
     start_position: int,
     sessionmaker: async_sessionmaker,
 ) -> None:
-    """Background task for a job (future-dev 3a).
+    """Background task for a job (future-dev 3a, round 2 locking).
 
     Own session: the request session is closed once the response is sent,
     so the job cannot reuse it. The sessionmaker is built from the
     request session's engine, so tests (which override get_db with an
     in-memory engine) run the background job against the same test DB.
+
+    The job is claimed first: if another worker already owns it (live
+    lease) this call returns without doing anything — that is what makes
+    double execution impossible.
     """
     async with sessionmaker() as bg_db:
+        claimed = await claim_job(bg_db, job_id, project_id, WORKER_ID)
+        if not claimed:
+            # Two cases, and they need different handling:
+            # (a) THIS job already holds a live lock — another runner
+            #     (a duplicate task / retry race) owns it. Do nothing;
+            #     that runner will finish it.
+            # (b) ANOTHER job for the project holds the lock — this job
+            #     can never run while that lock is live. Fail it with a
+            #     clear message instead of leaving it stuck RUNNING.
+            job = await bg_db.scalar(
+                select(AutoGenerateJob).where(AutoGenerateJob.id == job_id)
+            )
+            if job is not None and job.status == AutoGenerateJobStatus.RUNNING:
+                lease = _aware(job.lease_expires_at)
+                if job.locked_by is not None and lease is not None and lease > _now():
+                    logger.info(
+                        "auto-generate job %s already owned by another worker; skipping",
+                        job_id,
+                    )
+                    return
+                job.status = AutoGenerateJobStatus.FAILED
+                job.error_message = (
+                    "Another auto-generate job is already running for this "
+                    "project — retry after it finishes"
+                )
+                job.completed_at = _now()
+                await bg_db.commit()
+            # A job that is no longer RUNNING (already completed/failed
+            # by the owning runner) needs nothing: never clobber a
+            # terminal state.
+            return
         job = await bg_db.scalar(
             select(AutoGenerateJob).where(AutoGenerateJob.id == job_id)
         )
@@ -632,27 +804,43 @@ async def _run_job_in_background(
         if project is None:
             return
         try:
-            await _run_from(bg_db, job, project, start_position)
+            await _run_from(bg_db, job, project, start_position, WORKER_ID)
         except Exception as exc:  # noqa: BLE001 - never leave a job stuck
-            job.status = AutoGenerateJobStatus.FAILED
-            job.error_message = f"Job runner failed: {exc}"
-            job.completed_at = _now()
-            await bg_db.commit()
+            await bg_db.rollback()
+            job = await bg_db.scalar(
+                select(AutoGenerateJob).where(AutoGenerateJob.id == job_id)
+            )
+            if job is not None:
+                job.status = AutoGenerateJobStatus.FAILED
+                job.error_message = f"Job runner failed: {exc}"
+                job.completed_at = _now()
+                await bg_db.commit()
+        finally:
+            async with sessionmaker() as rel_db:
+                await release_job(rel_db, job_id, WORKER_ID)
 
 
 async def _mark_interrupted_jobs_failed() -> None:
     """Startup sweep: jobs left RUNNING by a server restart are failed.
 
-    Called once from the app lifespan. Their FAILED steps can be retried
-    normally. Single-worker assumption: with several uvicorn workers this
-    could fail a job another worker is legitimately running.
+    Called once from the app lifespan. Only jobs whose lease has
+    expired (or was never claimed) are failed — a job with a LIVE
+    lease is being run by another worker right now, and failing it
+    would be wrong. Multi-worker safe: every worker runs this sweep,
+    but the lease condition makes it idempotent. Their FAILED steps
+    can be retried normally.
     """
     from app.core.database import async_session_maker
 
+    now = _now()
     async with async_session_maker() as db:
         jobs = list((await db.scalars(
             select(AutoGenerateJob).where(
-                AutoGenerateJob.status == AutoGenerateJobStatus.RUNNING
+                AutoGenerateJob.status == AutoGenerateJobStatus.RUNNING,
+                or_(
+                    AutoGenerateJob.lease_expires_at.is_(None),
+                    AutoGenerateJob.lease_expires_at < now,
+                ),
             )
         )).all())
         for job in jobs:
@@ -661,6 +849,9 @@ async def _mark_interrupted_jobs_failed() -> None:
                 "Interrupted by server restart — retry the failed step"
             )
             job.completed_at = _now()
+            job.locked_by = None
+            job.locked_at = None
+            job.lease_expires_at = None
             steps = list((await db.scalars(
                 select(AutoGenerateStep).where(
                     AutoGenerateStep.job_id == job.id,
@@ -739,8 +930,34 @@ async def create_auto_generate_job(
     The title in the body is the series title (the project title is left
     untouched). Returns immediately with status "running"; poll
     GET /projects/{id}/auto-generate/{job_id} for live per-step progress.
+
+    Simultaneous-create race: the pre-check above is advisory only —
+    two requests arriving in the same instant can both pass it. The
+    atomic UPDATE inside claim_job is the real arbiter, so the lock is
+    claimed HERE, in the request, before returning 201. A loser gets
+    409 and its just-inserted row is deleted, so a duplicate RUNNING
+    job is never visible and no FAILED litter is left behind. The only
+    remaining window is between the two requests' pre-check SELECTs —
+    both rows are briefly inserted, but only one can ever hold the
+    lock or run, and the loser is removed before the response.
     """
     project = await _verify_project_access(project_id, user_id, db)
+
+    # One active job per project (round 2): a second job may not start
+    # while another job for this project holds a live lock. A stale
+    # RUNNING job (lease expired — its worker died) does not block.
+    live_other = await db.scalar(
+        select(AutoGenerateJob).where(
+            AutoGenerateJob.project_id == project.id,
+            AutoGenerateJob.status == AutoGenerateJobStatus.RUNNING,
+            AutoGenerateJob.lease_expires_at > _now(),
+        )
+    )
+    if live_other is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Another auto-generate job is already running for this project",
+        )
 
     job = AutoGenerateJob(
         project_id=project.id,
@@ -761,6 +978,21 @@ async def create_auto_generate_job(
         ))
     await db.commit()
     await db.refresh(job)
+
+    # Claim the lock now: the loser of a simultaneous create is
+    # rejected here with 409 instead of returning 201 and failing
+    # later in the background runner. The lock is placed under the
+    # placeholder owner "create:<job_id>" (NOT this worker's id), so
+    # the background runner can take it over via claim_job while a
+    # duplicate runner task is still blocked.
+    claimed = await claim_job(db, job.id, project.id, f"create:{job.id}")
+    if not claimed:
+        await db.delete(job)  # steps cascade (delete-orphan)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Another auto-generate job is already running for this project",
+        )
 
     asyncio.create_task(_run_job_in_background(
         job.id, project.id, 0, _background_sessionmaker(db),

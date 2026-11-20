@@ -1,9 +1,10 @@
 """Google account token helpers shared by the google-accounts router and the
 Flow Bridge account fallback.
 
-Reads/writes tokens ENCRYPTED in the DB (via app.core.security) — never via
-the GET /google-accounts/{id}/tokens HTTP endpoint, which returns plaintext
-tokens and is intentionally left untouched (separate Di decision).
+Reads/writes tokens ENCRYPTED in the DB (via app.core.security). The former
+GET /google-accounts/{id}/tokens HTTP endpoint, which returned plaintext
+tokens, was DELETED 20 Nov 2026 on Di's order — no HTTP route exposes
+decrypted tokens or passwords anymore.
 """
 import os
 from datetime import datetime, timezone, timedelta
@@ -134,3 +135,50 @@ def _token_expiry(account: GoogleAccount) -> datetime | None:
     if expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=timezone.utc)
     return expiry
+
+
+async def cleanup_undecryptable_credentials(db: AsyncSession) -> dict[str, int]:
+    """Clear stored Google ciphertext that no longer decrypts.
+
+    The Fernet key derivation changed in future-dev round 2 (the old
+    code truncated ENCRYPTION_KEY to 32 chars and re-encoded it, which
+    derived a DIFFERENT key). Rows encrypted under the old derivation
+    now raise InvalidToken on every decrypt — including the test
+    accounts left by the 19 Nov fallback test. An undecryptable value
+    is unusable data, not a secret worth keeping: clear the field so
+    the account stays usable (the user re-enters a password / re-links
+    the account) instead of 500ing every caller that touches it.
+
+    Only clears fields that FAIL to decrypt; good rows are untouched.
+    Returns {"password": n, "access_token": n, "refresh_token": n}.
+    Commits only when something was cleared.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    result = await db.execute(select(GoogleAccount))
+    accounts = result.scalars().all()
+    cleared: dict[str, int] = {"password": 0, "access_token": 0, "refresh_token": 0}
+    for account in accounts:
+        for field, attr in (
+            ("password", "password_encrypted"),
+            ("access_token", "access_token_encrypted"),
+            ("refresh_token", "refresh_token_encrypted"),
+        ):
+            value = getattr(account, attr)
+            if not value:
+                continue
+            try:
+                decrypt_data(value)
+            except Exception:  # noqa: BLE001 - any decrypt failure = unusable data
+                logger.warning(
+                    "Clearing undecryptable %s for Google account %s (%s)",
+                    field,
+                    account.id,
+                    account.email,
+                )
+                setattr(account, attr, None)
+                cleared[field] += 1
+    if any(cleared.values()):
+        await db.commit()
+    return cleared

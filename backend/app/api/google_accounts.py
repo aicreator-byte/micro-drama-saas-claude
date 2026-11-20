@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.api.auth import get_current_user_id
-from app.core.security import encrypt_data, decrypt_data
+from app.core.security import encrypt_data
 from app.models.google_account import GoogleAccount
 from app.models.oauth_state import OAuthState
 from app.models.settings import AppSettings
@@ -623,30 +623,3 @@ async def get_browser_session(
     if not status:
         return {"has_session": False, "email": account.email}
     return {"has_session": True, "email": account.email, **status}
-
-
-@router.get("/{account_id}/tokens")
-async def get_account_tokens(
-    account_id: str,
-    user_id: str = Depends(get_current_user_id),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get decrypted tokens for API calls (internal use)"""
-    user_uuid = uuid.UUID(user_id)
-    account_uuid = uuid.UUID(account_id)
-    result = await db.execute(
-        select(GoogleAccount).where(
-            GoogleAccount.id == account_uuid,
-            GoogleAccount.user_id == user_uuid,
-        )
-    )
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(status_code=404, detail="Google account not found")
-
-    return {
-        "access_token": decrypt_data(account.access_token_encrypted) if account.access_token_encrypted else None,
-        "refresh_token": decrypt_data(account.refresh_token_encrypted) if account.refresh_token_encrypted else None,
-        "token_expiry": account.token_expiry,
-        "password": account.get_password(),
-    }

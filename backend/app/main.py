@@ -5,16 +5,22 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import init_db, close_db
+from app.core.middleware import RateLimitMiddleware, SecurityHeadersMiddleware
+from app.core.secrets import validate_secrets
 from app.api import auth, projects, series_bible, characters, locations, episodes, scenes, dialogues, prompts, assets, google_accounts, flow_bridge, story_engine, settings as settings_api, shots, auto_generate, dashboard
 from app.api.auto_generate import _mark_interrupted_jobs_failed
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup — fail fast on weak secrets in production (round 2);
+    # development only gets a warning (see app/core/secrets.py).
+    validate_secrets()
     await init_db()
     # Jobs left RUNNING by a previous server restart are failed so their
     # steps can be retried instead of staying stuck forever (future-dev 3a).
+    # Only jobs whose lease expired are failed — a live lease means
+    # another worker is running that job right now (round 2).
     await _mark_interrupted_jobs_failed()
     yield
     # Shutdown
@@ -46,6 +52,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate limiting on auth endpoints (round 2). Security headers are added
+# last so they run outermost — 429 responses get the headers too.
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Include routers with /api prefix
 app.include_router(auth.router, prefix="/api")

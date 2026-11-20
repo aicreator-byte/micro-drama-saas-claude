@@ -1,4 +1,5 @@
 """Authentication API router"""
+from datetime import datetime, timezone
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,7 +8,7 @@ from app.core.database import get_db
 from app.core.security import (
     verify_password, get_password_hash,
     create_access_token, create_refresh_token,
-    verify_token
+    verify_token, is_token_revoked, revoke_token,
 )
 from app.models.user import User
 from app.schemas.user import UserCreate, UserLogin, UserRead, Token
@@ -27,6 +28,10 @@ async def get_current_user_id(
     payload = verify_token(token, "access")
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Revoked tokens (logout) are rejected even before expiry.
+    if await is_token_revoked(db, payload.get("jti")):
+        raise HTTPException(status_code=401, detail="Token has been revoked")
 
     user_id = payload.get("sub")
     import uuid
@@ -110,6 +115,10 @@ async def refresh_token(request: RefreshTokenRequest, db: AsyncSession = Depends
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+    # A revoked refresh token (logout) cannot mint new access tokens.
+    if await is_token_revoked(db, payload.get("jti")):
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+
     user_id = payload.get("sub")
     import uuid
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
@@ -128,3 +137,58 @@ async def refresh_token(request: RefreshTokenRequest, db: AsyncSession = Depends
 async def get_current_user_info(user: User = Depends(get_current_user)):
     """Get current user info"""
     return user
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None
+
+
+def _expiry_of(payload: dict) -> datetime | None:
+    """Token expiry as an aware datetime (None when the claim is absent)."""
+    exp = payload.get("exp")
+    if exp is None:
+        return None
+    try:
+        return datetime.fromtimestamp(exp, tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+@router.post("/logout")
+async def logout(
+    request: LogoutRequest,
+    authorization: Annotated[str | None, Header()] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke the caller's tokens (token revocation, round 2).
+
+    Revokes the access token from the Authorization header (when it is a
+    still-valid access token) and the refresh token from the body (when
+    given). Revoked tokens are rejected by /me, /refresh and every
+    authenticated endpoint until their own expiry. Unknown/expired
+    tokens are simply ignored — logout is idempotent.
+    """
+    revoked = 0
+    if authorization and authorization.startswith("Bearer "):
+        payload = verify_token(authorization[7:], "access")
+        if payload and payload.get("jti"):
+            if await revoke_token(
+                db,
+                jti=payload["jti"],
+                token_type="access",
+                user_id=payload.get("sub"),
+                expires_at=_expiry_of(payload),
+            ):
+                revoked += 1
+    if request.refresh_token:
+        payload = verify_token(request.refresh_token, "refresh")
+        if payload and payload.get("jti"):
+            if await revoke_token(
+                db,
+                jti=payload["jti"],
+                token_type="refresh",
+                user_id=payload.get("sub"),
+                expires_at=_expiry_of(payload),
+            ):
+                revoked += 1
+    return {"detail": "Logged out", "revoked": revoked}

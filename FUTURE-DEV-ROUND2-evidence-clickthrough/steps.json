@@ -1,0 +1,76 @@
+{
+  "email": "r2-ct-6470e49a@example.com",
+  "project": "Clickthrough Test",
+  "steps": [
+    {
+      "step": "register via UI -> dashboard",
+      "ok": true,
+      "detail": "http://localhost:3000/dashboard"
+    },
+    {
+      "step": "dashboard stats fresh user",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "create project via UI",
+      "ok": true,
+      "detail": "Clickthrough Test"
+    },
+    {
+      "step": "open Auto-Generate modal",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "whitespace title -> hint + Start disabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "title restored",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "Start Auto-Generate clicked, job view shown",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "overlay click while running does not close modal",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "job completed in modal (all 5 steps)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "step summaries shown",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "Done closes modal",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "dashboard stats after job",
+      "ok": true,
+      "detail": "Micro Drama SaaS | Dashboard | Projects | Series Bible | Characters | Locations | Episodes | Scenes | Dialogues | Prompts | Story Engine | Assets"
+    },
+    {
+      "step": "characters page lists generated cast",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "step": "episodes page lists generated episodes",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

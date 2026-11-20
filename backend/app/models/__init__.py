@@ -18,6 +18,7 @@ from app.models.shot import Shot
 from app.models.scene_engine import SceneEngine
 from app.models.oauth_state import OAuthState
 from app.models.auto_generate import AutoGenerateJob, AutoGenerateStep
+from app.models.revoked_token import RevokedToken
 
 __all__ = [
     "Base",
@@ -41,4 +42,5 @@ __all__ = [
     "OAuthState",
     "AutoGenerateJob",
     "AutoGenerateStep",
+    "RevokedToken",
 ]

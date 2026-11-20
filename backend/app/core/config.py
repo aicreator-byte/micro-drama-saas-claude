@@ -38,6 +38,20 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
 
+    # Rate limiting (auth endpoints only; per IP, per minute) — see
+    # app/core/middleware.py. Read per request so tests can monkeypatch.
+    RATE_LIMIT_ENABLED: bool = True
+    # When True, the limiter stores its sliding window in Redis
+    # (REDIS_URL above) so all workers share one budget. When False
+    # (default) or when Redis is unreachable, it falls back to the
+    # per-process in-memory limiter — never fail a request because
+    # Redis is down.
+    RATE_LIMIT_USE_REDIS: bool = False
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_LOGIN_PER_MINUTE: int = 60
+    RATE_LIMIT_REGISTER_PER_MINUTE: int = 60
+    RATE_LIMIT_REFRESH_PER_MINUTE: int = 120
+
     # AI (Nvidia NIM) — dibaca ai_client sebagai fallback bila key tidak ada
     # di os.environ (nilai dari .env tidak masuk os.environ).
     NVIDIA_API_KEY: str = ""

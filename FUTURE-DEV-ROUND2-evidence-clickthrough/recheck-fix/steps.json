@@ -1,0 +1,22 @@
+[
+  {
+    "step": "api baseline",
+    "ok": true,
+    "detail": "project a4fa1b49 chars=5 eps=3"
+  },
+  {
+    "step": "login via UI",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "step": "characters direct load shows cast",
+    "ok": true,
+    "detail": "first char='Raka Pratama' present=True"
+  },
+  {
+    "step": "episodes direct load shows episodes",
+    "ok": true,
+    "detail": "first ep='Topeng Pertama' present=True"
+  }
+]

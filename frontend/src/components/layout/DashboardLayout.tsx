@@ -1,9 +1,10 @@
 "use client"
 
-import { ReactNode, useState } from "react"
+import { ReactNode, useEffect, useState } from "react"
 import Link from "next/link"
 import { useRouter, usePathname } from "next/navigation"
 import { useAuthStore } from "@/lib/auth-store"
+import { useProjectStore } from "@/lib/project-store"
 import { Button } from "@/components/ui/Button"
 import { clsx } from "clsx"
 import {
@@ -50,8 +51,20 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const router = useRouter()
   const pathname = usePathname()
   const { user, logout } = useAuthStore()
+  const { fetchProjects } = useProjectStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
+
+  // Round-2 click-through finding: result pages (Characters, Episodes,
+  // Locations, Prompts, ...) read the project list from this store but
+  // never fetch it themselves, and the store only persists
+  // currentProject — so after a refresh or a direct URL visit the list
+  // is empty and they show "No projects yet" even though projects
+  // exist. Fetch the list here (this layout wraps every dashboard
+  // page) so it is always present and fresh.
+  useEffect(() => {
+    fetchProjects()
+  }, [fetchProjects])
 
   const handleLogout = () => {
     logout()

@@ -58,6 +58,18 @@ class AutoGenerateJob(Base):
         SQLEnum(AutoGenerateJobStatus), default=AutoGenerateJobStatus.RUNNING, nullable=False
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Multi-worker job lock (future-dev round 2): which worker owns this
+    # RUNNING job and until when. A job is claimed with one atomic
+    # UPDATE (see claim_job); a second worker's claim fails while the
+    # lease is live, so a job can never run twice. NULL = not claimed
+    # (fresh job, or finished/failed). The startup sweep only fails
+    # RUNNING jobs whose lease has expired, so it can no longer kill a
+    # job another worker is legitimately running.
+    locked_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
